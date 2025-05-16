@@ -1,0 +1,53 @@
+services:
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik
+    command:
+      - '--entrypoints.web.address=:80'
+      - '--entrypoints.websecure.address=:443'
+      - '--providers.docker=true'
+      - '--providers.docker.exposedbydefault=false'
+      - '--certificatesresolvers.letsencrypt.acme.httpchallenge=true'
+      - '--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web'
+      - '--certificatesresolvers.letsencrypt.acme.email=christian@reallygreattech.com'
+      - '--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json'
+      - '--api.dashboard=false'
+      - '--log.level=INFO'
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - '/var/run/docker.sock:/var/run/docker.sock:ro'
+      - 'traefik_letsencrypt:/letsencrypt'
+    networks:
+      - monitoring
+    restart: always
+
+  gmcp-prod:
+    image: 330858616968.dkr.ecr.eu-central-1.amazonaws.com/google-drive-mcp:latest
+    container_name: gmcp-prod
+    logging:
+      driver: 'awslogs'
+      options:
+        awslogs-region: eu-central-1
+        awslogs-group: gmcp-prod-logs
+        awslogs-stream: gmcp-prod-logstream
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.gmcp.rule=Host(`gmcp.reallygreattech.com`)'
+      - 'traefik.http.routers.gmcp.entrypoints=websecure'
+      - 'traefik.http.routers.gmcp.tls.certresolver=letsencrypt'
+      - 'traefik.http.services.gmcp.loadbalancer.server.port=8000'
+      - 'traefik.http.routers.gmcp-redirect.rule=Host(`gmcp.reallygreattech.com`)'
+      - 'traefik.http.routers.gmcp-redirect.entrypoints=web'
+      - 'traefik.http.routers.gmcp-redirect.middlewares=https-redirect'
+      - 'traefik.http.middlewares.https-redirect.redirectscheme.scheme=https'
+    restart: always
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+
+volumes:
+  traefik_letsencrypt:

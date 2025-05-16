@@ -1,0 +1,15 @@
+.venv
+gdrive_mcp/
+.env
+credentials.json
+token.*
+_playground.py
+__pycache__
+.vscode/
+.history/
+.pytest_cache/
+.coverage
+*.json
+htmlcov
+.python-version
+**.DS_Store

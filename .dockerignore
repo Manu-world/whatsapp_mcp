@@ -1,0 +1,53 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyc
+*.pyd
+# Environment and secrets
+.env
+*.env
+
+# Virtual environments
+venv/
+.venv/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Git and editor junk
+.git/
+.github/
+.gitignore
+.vscode/
+.history/
+.idea/
+
+# Docker and compose files (not needed inside container)
+docker-compose.yml
+docker-compose.*.yml
+Dockerfile
+*.log
+
+# Tests and coverage (optional)
+tests/
+.coverage
+coverage.xml
+htmlcov/
+
+
+
+
+*.so
+*.swp
+*.swo
+.DS_Store
+env/
+ENV/
+*.egg-info/
+.pytest_cache/
+node_modules/
+logs/
+.scannerwork/

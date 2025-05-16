@@ -1,0 +1,203 @@
+name: Build, Package and Deploy Google Drive MCP Project
+
+# on:
+#   push:
+#     branches:
+#       - main
+#   workflow_dispatch:
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_REGISTRY: 330858616968.dkr.ecr.eu-central-1.amazonaws.com
+  ECR_REPO: google-drive-mcp
+
+jobs:
+  analyse-build-and-push-ecr:
+    name: Analyze, Build and Push Image to ECR
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+      id-token: write
+    outputs:
+      sonar_status: ${{ steps.sonar-status.outputs.sonar_status }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Run tests with coverage
+        env:
+          OPENAI_API_KEY: "dummy-test-key"
+        run: |
+          pytest --cov=app --cov-report=xml --cov-config=.coveragerc
+
+      - name: Scan source code with sonarqube
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: Verify against quality gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Set sonar status output
+        if: always()
+        run: |
+          if [ -f ".scannerwork/report-task.txt" ]; then
+            STATUS=$(grep -Po 'status=\K\w+' .scannerwork/report-task.txt)
+            echo "sonar_status=$STATUS" >> $GITHUB_OUTPUT
+          else
+            echo "sonar_status=UNKNOWN" >> $GITHUB_OUTPUT
+          fi
+        id: sonar-status
+
+      - name: Set Unique Docker Image tag
+        id: set-tag
+        run: echo "TAG=$(date '+%Y%m%d%H%M%S')-${{ github.run_id }}" >> $GITHUB_ENV
+
+      - name: Set up Docker BuildX
+        id: buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::330858616968:role/gmcp-oidc-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Docker Image to ECR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          builder: ${{ steps.buildx.outputs.name }}
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ env.TAG }}
+            ${{ env.ECR_REGISTRY }}/${{env.ECR_REPO}}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan Docker image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ env.TAG }}"
+          format: "table"
+          exit-code: "0"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          severity: "CRITICAL,HIGH"
+
+  deploy-to-ec2:
+    name: Deploy to EC2
+    needs: analyse-build-and-push-ecr
+    runs-on: ubuntu-latest
+    if: needs.analyse-build-and-push-ecr.result == 'success'
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::330858616968:role/gmcp-oidc-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update container via SSM
+        uses: debugger24/aws-ssm-run-command@v1
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          instance-ids: ${{ secrets.INSTANCE_ID }}
+          commands: |
+            cd /home/ubuntu
+            docker compose stop gmcp-prod || true
+            docker compose rm -f gmcp-prod || true
+            docker image prune -f --filter "label=com.docker.compose.service=gmcp-prod"
+            docker compose pull gmcp-prod
+            docker compose up -d gmcp-prod
+
+  notify-slack:
+    name: Notify Slack
+    needs: [analyse-build-and-push-ecr, deploy-to-ec2]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: ${{ always() && github.event_name != 'workflow_dispatch'}}
+    steps:
+      - name: Generate Sonar Report
+        id: sonar-report
+        run: |
+          if [[ "${{ needs.analyse-build-and-push-ecr.outputs.sonar_status }}" == "PASSED" ]]; then
+            echo "sonar_msg=:white_check_mark: SonarQube quality gate PASSED" >> $GITHUB_OUTPUT
+          else
+            echo "sonar_msg=:x: SonarQube quality gate FAILED" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate Deploy Status
+        id: deploy-status
+        run: |
+          if [[ "${{ needs.deploy-to-ec2.result }}" == "success" ]]; then
+            echo "deploy_msg=:white_check_mark: Deployment to EC2 SUCCESSFUL" >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.deploy-to-ec2.result }}" == "skipped" ]]; then
+            echo "deploy_msg=:warning: Deployment to EC2 SKIPPED" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_msg=:x: Deployment to EC2 FAILED" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Slack Notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ needs.analyse-build-and-push-ecr.result }}
+          fields: repo,message,commit,author,action,eventName,workflow
+          custom_payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Workflow:* ${{ github.workflow }}\n*Result:* ${{ needs.analyse-build-and-push-ecr.result }}\n*Repo:* ${{ github.repository }}\n*Branch:* ${{ github.ref_name }}\n*Commit:* ${{ github.event.head_commit.message }}\n*Author:* ${{ github.actor }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*SonarQube:* ${{ steps.sonar-report.outputs.sonar_msg }}\n*Deployment:* ${{ steps.deploy-status.outputs.deploy_msg }}"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow Run>"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          GITHUB_TOKEN: ${{ github.token }}
