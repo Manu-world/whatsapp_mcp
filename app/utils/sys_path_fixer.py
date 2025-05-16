@@ -51,3 +51,32 @@ def check_and_clean_files(user_number="12345"):
     return False
 
 # print(f"check {check_and_clean_files('233541055472')}")
+
+import os
+import json
+from pathlib import Path
+
+def save_gcp_oauth_keys():
+    try:
+        raw_json = os.getenv("GCP_OAUTH_JSON")
+        if not raw_json:
+            raise EnvironmentError("GCP_OAUTH_JSON not found in environment variables.")
+
+        try:
+            parsed_json = json.loads(raw_json)
+        except json.JSONDecodeError as e:
+            raise ValueError("GCP_OAUTH_JSON is not valid JSON.") from e
+
+        project_root = Path(__file__).resolve().parent.parent.parent  # assuming script is in /project/scripts or similar
+        file_path = project_root / "gcp-oauth.keys.json"
+
+        with open(file_path, "w") as f:
+            json.dump(parsed_json, f, indent=2)
+
+        print(f"[✓] GCP OAuth keys saved to {file_path}")
+
+    except Exception as e:
+        print(f"[✗] Failed to save GCP OAuth keys: {e}")
+        raise
+
+

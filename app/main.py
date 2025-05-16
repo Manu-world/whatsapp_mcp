@@ -7,6 +7,8 @@ from app.core.config import setup_logging
 import os
 import pathlib
 
+from app.utils.sys_path_fixer import save_gcp_oauth_keys
+
 logger = setup_logging()
 
 @asynccontextmanager
@@ -16,6 +18,10 @@ async def lifespan(app: FastAPI):
     gmail_mcp_dir = os.path.join(home_dir, '.gmail-mcp')
     os.makedirs(gmail_mcp_dir, exist_ok=True)
     logger.info(f"Created .gmail-mcp directory at {gmail_mcp_dir}")
+    
+    save_gcp_oauth_keys()
+    logger.info("gcp-oauth.keys.json file is saved.")
+    
 
     logger.info("Initializing agent")
     await init_agent()
